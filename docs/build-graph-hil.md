@@ -29,6 +29,16 @@ Everything else is planned (status *Future* in IcePanel).
 
 End statuses: `done`, `partial`, `failed`, `rejected`, `cancelled`.
 
+## Two places where the graph asks the user
+
+| | Where | Who asks | Example |
+|---|---|---|---|
+| **1-HIL** | before SQL | `route` (what to do?) | `gross_revenue` or `net_revenue`? |
+| **2-HIL** | after SQL, before the sandbox | `spec_check` (how to do it?) | impute 40% nulls or drop rows? |
+
+Both use the same `ask_user` node. `ask_origin` in the state says where to go back after the answer:
+`route` for 1-HIL, `spec_check` for 2-HIL. There are no questions inside the sandbox.
+
 ---
 
 ## 1. Rejected prompt
@@ -60,7 +70,7 @@ sequenceDiagram
 
 ---
 
-## 2. Clarify before SQL (route asks)
+## 2. 1-HIL: clarify before SQL (route asks)
 
 `route` finds the prompt unclear (e.g. `gross_revenue` or `net_revenue`?).
 The graph stops, the user answers, `route` runs again. At most 2 rounds.
@@ -79,7 +89,7 @@ sequenceDiagram
     LLM-->>G: intent = clarify
 
     loop at most MAX_CLARIFY_ROUNDS (2)
-        G->>G: ask_user (question + options)
+        G->>G: ask_user (ask_origin = route)
         G->>CP: save checkpoint
         G-->>API: event: question
         API-->>U: SSE: question with buttons
@@ -98,7 +108,7 @@ sequenceDiagram
 
 ---
 
-## 3. Analysis: confirm, cancel, timeout
+## 3. 2-HIL: after SQL, before the sandbox (confirm, cancel, timeout)
 
 After `plan`, code in `spec_check` finds gaps (target column, 40% nulls, ...).
 The user confirms an option, cancels, or does not answer in 24 h.
@@ -112,11 +122,14 @@ sequenceDiagram
     participant CP as Checkpointer
     participant SB as Sandbox
 
+    Note over G: route said analysis
+    G->>LLM: generate_sql
+    G->>G: validate (sqlglot / firewall)
     G->>G: profile (SQL aggregates, no LLM)
     G->>LLM: plan
     LLM-->>G: AnalysisSpec
     G->>G: spec_check → SpecGaps found
-    G->>G: ask_user (questions from templates)
+    G->>G: ask_user (ask_origin = spec_check, questions from templates)
     G->>CP: save checkpoint
     G-->>API: event: question
     API-->>U: SSE: question with buttons
@@ -127,7 +140,7 @@ sequenceDiagram
         API->>G: resume (thread_id, answer)
         CP-->>G: load state
         G->>G: apply_answer (code writes choice into spec)
-        G->>G: spec_check again
+        G->>G: back to spec_check (ask_origin)
         G->>G: freeze (spec_frozen)
         G->>G: extract (parquet, row cap)
         G->>SB: open_session
