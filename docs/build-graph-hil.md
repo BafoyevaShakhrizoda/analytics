@@ -14,7 +14,8 @@ Everything else is planned (status *Future* in IcePanel).
 |---|---|
 | User | Business user in the Frontend |
 | API | FastAPI backend: starts the graph, streams events over SSE, receives answers |
-| Graph | The single LangGraph build graph |
+| Graph | The single LangGraph build graph (runs in the Celery worker, see section 4) |
+| Redis | Celery broker + event stream per build (`build:{prompt_id}:events`) |
 | Checkpointer | Postgres, keeps graph state between pause and resume (`thread_id = build:{prompt_id}`) |
 | LLM | LLM API (route, plan, summarize) |
 | Sandbox | Sandbox runner + container (gVisor) |
@@ -163,10 +164,64 @@ sequenceDiagram
         G->>CP: persist (status = cancelled)
         API-->>U: SSE: cancelled
     else no answer in 24 h
-        API->>G: resume (thread_id, timeout)
+        Note over G: Celery beat finds builds paused > 24 h
+        G->>G: resume (thread_id, timeout)
         G->>CP: persist (status = cancelled)
     end
 ```
+
+---
+
+## 4. User leaves and comes back (proposed)
+
+A question can wait up to 24 h, so the graph must not depend on the user's browser.
+Proposal: the graph runs in the **Celery worker**, not inside the API request.
+The worker writes events to a Redis stream; the API only reads that stream for SSE.
+Closing the page closes the SSE connection, but the build keeps its state.
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant API
+    participant R as Redis
+    participant W as Worker (Graph)
+    participant CP as Checkpointer
+
+    U->>API: send prompt
+    API->>R: enqueue run_build(prompt_id)
+    API-->>U: SSE connected
+    R->>W: run_build
+    W->>W: ... route / spec_check → ask_user
+    W->>CP: save checkpoint (status = waiting_answer)
+    W->>R: event: question
+    R-->>API: event: question
+    API-->>U: SSE: question
+    Note over W: worker is free, graph is paused
+
+    U--xAPI: closes the page (SSE closed)
+    Note over U,CP: nothing is cancelled, build waits up to 24 h
+
+    U->>API: opens the page again
+    API->>CP: load build state
+    CP-->>API: status = waiting_answer, question
+    API-->>U: shows the same question
+    U->>API: SSE reconnect (Last-Event-ID)
+    R-->>API: events after Last-Event-ID
+    API-->>U: missed events (if any)
+
+    U->>API: answer
+    API->>R: enqueue resume_build(prompt_id, answer)
+    R->>W: resume_build
+    CP-->>W: load state
+    W->>W: apply_answer → back to ask_origin → ...
+    W->>R: events: stages ..., done
+    R-->>API: events
+    API-->>U: SSE: result
+```
+
+What changes against today's code: `app/build_graph/runner.py` runs the graph inside FastAPI
+(`asyncio.create_task`) and cancels it when the client disconnects. With this proposal the
+disconnect only closes the stream; the build itself is stopped only by cancel, timeout or the end.
 
 ---
 
