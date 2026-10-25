@@ -42,6 +42,48 @@ Both use the same `ask_user` node. `ask_origin` in the state says where to go ba
 
 ---
 
+## 0. Quick chart (no questions)
+
+The most common case: a clear question that needs one SQL query and a chart.
+Today this runs inside the API request (`app/build_graph/runner.py`); the target moves it to the worker (section 4).
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant API
+    participant G as Graph
+    participant LLM
+    participant DB as Tenant DB
+    participant CP as Checkpointer
+
+    U->>API: send prompt
+    API->>G: start (thread_id = build:{prompt_id})
+    API-->>U: SSE connected
+    par
+        G->>LLM: title
+        G-->>U: SSE: title
+    and
+        G->>G: introspect (DB metadata)
+    end
+    G->>LLM: route
+    LLM-->>G: intent = sql_chart
+
+    loop at most MAX_SQL_ATTEMPTS (3)
+        G->>LLM: generate_sql
+        G->>G: validate (sqlglot / firewall)
+        G->>DB: execute (read-only, timeout)
+        DB-->>G: rows or error
+    end
+    G-->>U: SSE: sql
+
+    G->>G: normalize → map_chart
+    G->>LLM: suggest (follow-up ideas)
+    G->>CP: persist (status = done)
+    G-->>U: SSE: chart + suggestions, done
+```
+
+---
+
 ## 1. Rejected prompt
 
 `route` decides the prompt is unsafe or out of scope. No SQL is generated.
