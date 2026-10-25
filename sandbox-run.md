@@ -2,7 +2,7 @@
 
 Sequence diagrams for the sandbox part of the `analysis` path: from `extract` to `persist`.
 Questions to the user are already over at this point (`freeze`), see [build-graph-hil.md](build-graph-hil.md).
-Architecture and limits: [architecture.md](architecture.md), sections 5 and 9.
+Architecture and limits: [architecture.md](precise_architecture.md), sections 5 and 9.
 
 **Status:** prototype in `sandbox/` (zehn-analytics_backend). The prototype talks to the container with
 `docker run -i` and JSON lines over stdin/stdout. The target is a runner service over HTTP on k3s with gVisor.
